@@ -1,0 +1,229 @@
+* Type layouts in Rust
+
+I have worked on JVM and Browsers since ages, so I am not used to machine level stuffs. Honestly, Understanding basic type layouts took me few days why it is needed. Type is laid out in memory by alignment. An alignment is needed for how CPU accesses memory. But, the size of a type is the sum of a type allocated in memory.
+
+** Alignment
+
+It are required to understand memory layouts in Rust. On 64 bit target, the natural alignment is 8 bytes. Wikipedia defines [[https://en.wikipedia.org/wiki/Data_structure_alignment][Data structure *alignment*]]:
+
+#+BEGIN_QUOTE
+Data structure *alignment* is the way data is arranged and accessed in computer memory. It consists of three separate but related issues: data alignment, data structure padding, and packing.
+#+END_QUOTE
+
+Jason Olson noted a very comprehensive example in [[http://jolson88.com/programming/2019/09/29/primitive-rust-structs.html][Primitive Rust: a dive into structures]]:
+
+#+BEGIN_QUOTE
+On a 32-bit computer, the computer is most efficient when it is working with data in 4-byte increments that start on a 4-byte boundary. This is known as being naturally aligned. If data is not naturally aligned on these boundaries, the CPU may need to retrieve extra values from memory to work with a single piece of data. For example, if a 32-bit integer (4 bytes long) starts on the 3rd byte from a boundary, the CPU would need to fetch the first 4-bytes to get the 1st byte of the number and then fetch the next 4 bytes to get the last 3 bytes of the integer.
+#+END_QUOTE
+
+An alignment measured in bytes, must be at least 1 byte. The value of alignment 1 means 1 byte. The types bigger than word boundary, 8 bytes on 64 bit, is aligned to word boundaries. So On 64bit, the alignment value of bigger type is 8 bytes if it is not specified manually:
+
+#+CAPTION: =std::mem::align_of<T>()= returns on x86_64
+| =T=               | bytes |
+|-------------------+-------|
+| =bool=            |     1 |
+| =char=            |     4 |
+| =u8=              |     1 |
+| =u16=             |     2 |
+| =u32=             |     4 |
+| =u64=             |     8 |
+| any bigger struct |     8 |
+
+Programmers can put any number on alignment value with =#[repr(..)]=, =#[packed(..)]= annotation though, it is skipped here. I don't feel that it might come to me.
+
+** Size
+
+The size of type is supposed to be a multiple of an alignment value([[https://doc.rust-lang.org/reference/type-layout.html][Type Layout - The Rust Programming Language, 2nd edition]]).
+
+#+CAPTION: The size of primitive data.
+| =T=               | bytes |
+|-------------------+-------|
+| =bool=            |     1 |
+| =char=            |     4 |
+| =u8=              |     1 |
+| =u16=             |     2 |
+| =u32=             |     4 |
+| =u64=             |     8 |
+| =u128=            |    16 |
+
+
+#+BEGIN_SRC rust
+assert_eq!(1, mem::align_of::<bool>());
+assert_eq!(1, mem::size_of::<bool>());
+
+assert_eq!(4, mem::align_of::<char>());
+assert_eq!(4, mem::size_of::<char>());
+
+assert_eq!(1, mem::align_of::<u8>());
+assert_eq!(1, mem::size_of::<u8>());
+
+assert_eq!(2, mem::align_of::<u16>());
+assert_eq!(2, mem::size_of::<u16>());
+
+assert_eq!(4, mem::align_of::<u32>());
+assert_eq!(4, mem::size_of::<u32>());
+
+assert_eq!(8, mem::align_of::<u64>());
+assert_eq!(8, mem::size_of::<u64>());
+
+assert_eq!(8, mem::align_of::<u128>());
+assert_eq!(16, mem::size_of::<u128>());
+
+assert_eq!(8, mem::align_of::<*const bool>());
+assert_eq!(8, mem::size_of::<*const bool>());
+#+END_SRC
+
+** =struct=
+
+=struct= type is a product(sum) type in Rust. The alignment of =struct= is supposed to be the biggest alignment in fields, but the size of =struct= is the sum of sizes of all fields. In a =struct=, all fields are aligned to single alignment which is the biggest one among fields:
+
+#+BEGIN_SRC rust
+struct Struct1 {
+    _u8: u8,
+}
+
+struct Struct2 {
+    _u8: u8,
+    _u16: u16,
+}
+
+assert_eq!(1, mem::align_of::<Struct1>());
+
+assert_eq!(1, mem::size_of::<Struct1>());
+
+assert_eq!(2, mem::align_of::<Struct2>());
+
+assert_eq!(4, mem::size_of::<Struct2>());
+#+END_SRC
+
+Theoretically the size of =Struct2= should be 3 bytes, but the actual size is 4 bytes. Because =Struct2= has two fields and the biggest alignment of the type is 2 bytes, =Struct2._u16=. Each field takes the alignment 2 to measure the own size in =struct=. the size of =struct= is the sum of sizes of all fields.
+
+** =enum=
+
+=enum= type is a coproduct type. An alignment of =enum= type is supposed to be the biggest alignment in all fields like =struct=. Unlike =struct=, the size of =enum= type is the biggest size in all of the fields.
+
+#+BEGIN_SRC rust
+enum Enum1 {
+    U8(u8),
+}
+
+assert_eq!(1, mem::align_of::<Enum1>());
+
+assert_eq!(1, mem::size_of::<Enum1>());
+#+END_SRC
+
+=u8='s alignment and size are 1 byte and 1 byte, it just comes to =Enum1=. Rust does not add the internal tag field to =enum= types which have a single data constructor.
+
+#+BEGIN_SRC rust
+enum Enum2 {
+    U8(u8),
+    U16(u16),
+}
+
+assert_eq!(2, mem::align_of::<Enum2>());
+
+assert_eq!(4, mem::size_of::<Enum2>());
+#+END_SRC
+
+The these values of =Enum2= come from the biggest one, =Enum2::U16=. The alignment and size of =u16= are 2 bytes and 2 bytes. And Rust adds 1 byte of a tag field, =2^8= is more than enough for two data constructors, but the actual size of this tag field become 2 bytes because the alignment of =Enum2= is 2 bytes. Therefore, the alignment and size of =Enum2= are 2 bytes and 4 bytes(=Enum2::U16= + =tag field=)
+
+The actual layout is not fixed for the future optimizations. [[https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/][Programming Rust]] says that:
+
+#+BEGIN_QUOTE
+Rust makes no promises about enum layout, however, in order to leave the door open for future optimizations. In some cases, it would be possible to pack an enum more efficiently than the figure suggests. For instance, some generic structs can be stored without a tag at all, as we’ll see later.
+#+END_QUOTE
+
+#+BEGIN_SRC rust
+enum Enum3 {
+    U8(u8),
+    U24(u16, u8),
+}
+
+assert_eq!(2, mem::align_of::<Enum3>());
+
+assert_eq!(4, mem::size_of::<Enum3>());
+#+END_SRC
+
+Although =Enum3::U24= has one more place(=u8=), it has the same size with =Enum2::U16=. Because Rust is clever to place =u8= and the tag field together. [[https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/][Programming Rust]] showed a good example:
+
+#+BEGIN_SRC rust
+enum RoughTime {
+    InThePast(TimeUnit, u32),
+    JustNow,
+    InTheFuture(TimeUnit, u32),
+}
+#+END_SRC
+
+#+CAPTION: RoughTime values in memory
+#+NAME: Figure 10-1.
+#+ATTR_HTML: :width 800
+[[./20210309_type-layouts/figure_10-1.png]]
+
+** Unsized(=?Sized=)
+
+Most of types are sized types which implements =Sized= marker trait. Rust is aware of the size of a sized type in stack at compile time if the type implements =Sized= trait. Thankfully Rust implements it automatically for all types, we can disable it manually though.
+
+Why does Rust keep either of sized and unsized type? To be honest, I don't know. But I think Rust compiler can optimize the output on a target platform automatically if the size is available at compile time.
+
+Rust understands a few of these types, but they have some restrictions from [[https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/first-edition/unsized-types.html][Unsized Types - The Rust Programming Language, 1st edition]]
+
+#+BEGIN_QUOTE
+- *We can only manipulate an instance of an unsized type via a pointer.* An &[T] works fine, but a [T] does not.
+- Variables and arguments cannot have dynamically sized types.
+- Only the last field in a struct may have a dynamically sized type; the other fields must not. Enum variants must not have dynamically sized types as data.
+#+END_QUOTE
+
+I can define a =struct= with =str=, not =&str=. I do not know how to allocate it.
+
+#+BEGIN_SRC rust
+struct MyStr {
+    _unused: i32,
+    slice: str,
+}
+
+MyStr { _unused: 0, slice: "str" }
+                           ^^^^^ expected `str`, found `&str`
+#+END_SRC
+
+So, there are a few of built-in unsized types, as far as I know:
+
+- =[T]=, not =&[T]=:
+- =str=, not =&str=:
+- =dyn Trait=, not =Box<dyn Trait>=:
+
+#+CAPTION: References to unsized values
+#+NAME: Figure 13-1.
+[[#+ATTR_HTML: :width 800
+./20210309_type-layouts/figure_13-1.png]]
+
+** Slices
+
+We can get the size of unsized type with =mem::size_of_value()=, but it didn't work as I expected on slices. I thought that =size_of_value= might return the size of pointed actual value at first because =size_of_val(&"123456")= is 6, the size of =&str= is 16 though. so I expected that =size_of_val(&String("123456"))= might return 6. Actually it returns 24 of the size of String, =size_of::<String>=. It was confusing to me.
+
+I don't understand how =size_of_val= deals with unsized types internally. I think a slice are a fat pointer, =size_of_value= gets the size of pointed value by a fat pointer. like that, the function returns the size of pointed value by a normal pointer. It is my understanding:
+
+#+BEGIN_SRC rust
+assert_eq!(16, mem::size_of::<&str>());
+
+assert_eq!(8, mem::size_of::<&String>());
+
+let _str: &str = "123456";
+let _string: &String = &"123456".to_string();
+
+assert_eq!(6, mem::size_of_val(_str));
+
+assert_eq!(24, mem::size_of_val(_string));
+#+END_SRC
+
+** Wrap-up
+
+Memory layouts are very fundamental and confusing to me, I have taken it at first. Once I completed a great book, [[https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/][Programming Rust]], many questions have come up to me. Due to a lack of experience, things here might be wrong.
+
+** Reference
+
+- [[http://jolson88.com/programming/2019/09/29/primitive-rust-structs.html][Primitive Rust: a dive into structures]] by Jason Olson
+- [[https://doc.rust-lang.org/nomicon/exotic-sizes.html][The Rustonomicon - Exotically Sized Types]]
+- [[https://doc.rust-lang.org/reference/type-layout.html][Type Layout - The Rust Programming Language, 2nd edition]]
+- [[https://rust-hosted-langs.github.io/book/chapter-alignment.html][Writing Interpreters in Rust: a Guide - Alignment]]
+- [[https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/first-edition/unsized-types.html][Unsized Types - The Rust Programming Language, 1st edition]]
+- [[https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/][Programming Rust]]
