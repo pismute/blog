@@ -1,0 +1,166 @@
+* Algebraic Datatypes
+
+How we want to solve our problem? Needless to say, I would say firstly it is the principle of /Divide And Conquer/. We break a problem down first, and solve each small pieces of the problem, and at last compose the small results. In programming, we are supposed to encode the approach to models, datatypes in type level. The best way I have learned is encoding it to algebraic datatypes, It helps a lot us to have simple and clean logics.
+
+What makes datatypes algebraic? [[https://haskellbook.com][Haskell programming from first principles]] explains:
+
+#+BEGIN_QUOTE
+Algebraic datatypes in Haskell are algebraic, because we can describe the patterns of argument structures using two basic operations: sum and product. The most direct way to explain why they’re called sum and product is to demonstrate sum and product in terms of *cardinality*. This can be understood in terms of the cardinality you see with finite sets. This doesn't map perfectly, as we can have infinite data structures in Haskell, but it’s a good way to begin understanding and appreciating how datatypes work. When it comes to programming languages, we are concerned with computable functions, not just those that can generate a set.
+#+END_QUOTE
+
+** Sum type
+
+=bool= type has two possible values which are =true= and =false=, the cardinality of bool becomes 2. It is a simple addition with the cardinalities of =ture= and =false=. This kind of types is called a *sum* type, more generally *coproduct* type.
+
+We can define our own sum type with =enum= in Rust:
+
+#+BEGIN_SRC rust
+enum BookType {
+    Fiction,
+    Nonfiction
+}
+#+END_SRC
+
+The cardinality of =BookType= is 2 of Fiction and Nonfiction.
+
+** Product type
+
+There are another kind of type, *product* type. A tuple of two bools is a *product* type. Each bool type's cardinality is 2 so that the product of them is 4. Putting it this way, the cardinality of =(bool, bool)= is =2 * 2=.
+
+In Rust, a product type can be defined with =struct=.
+
+#+BEGIN_SRC rust
+struct Author {
+    author_name: String,
+    book_type: BookType
+}
+#+END_SRC
+
+When we evaluate this type, actually we want to match =BookType=:
+
+#+BEGIN_SRC rust
+match author {
+    Author {
+        author_name,
+        book_type: BookType::Fiction,
+    } => (),
+    Author {
+        author_name,
+        book_type: BookType::Nonfiction,
+        ..
+    } => (),
+}
+#+END_SRC
+
+The real models would have very deep hierarchy as our real world is, Consequently it turns out very complex logics unnecessarily. How can we make it simpler? we can rewrite it as a *Sum of Products*.
+
+** *Sum of Products*
+
+Algebraic datatypes can be defined in irreducible *normal form* like the arithmetic. Multiplication and addition arithmetic has /distributive/ property:
+
+#+BEGIN_SRC rust
+2 * (3 + 4)
+  2 * (7)
+    14
+#+END_SRC
+
+It can be rewritten, the multiplication can distribute over the addition:
+
+#+BEGIN_SRC rust
+2 * 3 + 2 * 4
+ (6)  +  (8)
+      14
+#+END_SRC
+
+This forms *Sum of Products*. In Algebraic datatypes, product types can distribute over sum types. Let's redefine above =Author= as a *Sum of Products*:
+
+#+BEGIN_SRC rust
+enum Author {
+    Fiction { author_name: String },
+    NonFiction { author_name: String },
+}
+#+END_SRC
+
+The evaluation logics is simpler, it starts with the sum type which we want to match:
+
+#+BEGIN_SRC rust
+match author {
+    Author::Fiction { author_name } => (),
+    Author::NonFiction { author_name } => (),
+}
+#+END_SRC
+
+** *Product of Sums*
+
+*Sum of Products* is a very useful idea, but not always. let's serialize above =Author= type to Json with =serde=:
+
+#+BEGIN_SRC rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+enum Author {
+    Fiction { author_name: String },
+    NonFiction { author_name: String },
+}
+
+let author = Author::Fiction {
+    author_name: "author".to_string(),
+};
+
+println!("{}", serde_json::to_string_pretty(&author).unwrap());
+// {
+//    "fiction": {
+//    "author_name": "author"
+//    }
+// }
+#+END_SRC
+
+The =json= is tagged with the name of data constructor, [[https://serde.rs/enum-representations.html][=serde= provides several options]] of type tagging and even untagged one. Deserialization generally needs a type tag which inform our program which data constructor to be used. Perhaps, we might want to hide Rust's type information to send out. In this case, =serde='s =#[serde(untagged)]= annotation can help us, it will try to match a json against each data constructor in order.
+
+However, =Author::Fiction= and =Author::NonFiction= have the same pattern, =Author::NonFiction= will never be matched. So, =Author= type needs a type tag. =serde='s built-in type tags includes Rust's type information directly. In another way, we can implement =Serialize= and =Deserialize= traits manually to put custom tags in our json.
+
+I personally love to do declarative ways of having additional models on each purpose like DTO and DAO and so on. But having additional models in Rust might be expensive because of cloning data and moving ownerships from domain models. I am not sure yet which approach is the best. Nonetheless, when we want to have models with our own tags, *Product of Sums* could suit better. The tag is a sum type.
+
+#+BEGIN_SRC rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+enum BookType {
+    Fiction,
+    Nonfiction,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+struct Author {
+    author_name: String,
+    book_type: BookType,
+}
+
+let author = Author {
+    author_name: "author".to_string(),
+    book_type: BookType::Fiction,
+};
+
+println!("{}", serde_json::to_string_pretty(&author).unwrap());
+// {
+//  "author_name": "author",
+//  "book_type": "fiction"
+// }
+#+END_SRC
+
+Of course, we can achieve the same goal with =#[serde(tag = "book_type")]= annotation on the domain models of *Sum of Products*. =serde= have many convenient ways which is exactly what we want.
+
+** Wrap-up
+
+The =Author= example got taken from [[https://haskellbook.com][Haskell programming from first principles]]. It has nothing more than the book.
+
+Apart from sum and product, *exponential* type, I don't know the exact term of it, is also possible. The cardinality of *function* type is calculated exponentially. the cardinality of =fn(bool, bool) -> bool= is 2 ^ (2 * 2). A data type in Rust can hold a function type in Rust. However, I think it might be not needed in general.
+
+I am learning Rust, possibly I went wrong with. Have fun!
+
+** Reference
+
+- [[https://haskellbook.com][Haskell programming from first principles]]
