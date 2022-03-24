@@ -193,8 +193,8 @@ So, there are a few of built-in unsized types, as far as I know:
 
 #+CAPTION: References to unsized values
 #+NAME: Figure 13-1.
-[[#+ATTR_HTML: :width 800
-./20210309_type-layouts/figure_13-1.png]]
+#+ATTR_HTML: :width 800
+[[./20210309_type-layouts/figure_13-1.png]]
 
 ** Slices
 
