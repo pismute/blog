@@ -1,0 +1,211 @@
+* Monadic Try
+
+=Try= trait is a abstraction of control flows. It is very useful in Rust. Not only for =?= and =try { }= sugaring, for =try_xxx= functions of iterator are very easy and clean, specially to me. In Scala =fold= combinators has no way to break an iteration. If I faced such situation, always I go for function recursion. Scala is a strict language too, breaking flow in =fold= is not possible. But, we can overcome the limitation of =fold= with Lazy wrapper. Haskell does not need to break anything explicitly. So, as far as I know, there are no typeclass to just break something. Haskell does not evaluate the rest of elements, because of Haskell's non-strictness.
+
+Anyway, I have learned recently [[https://rust-lang.github.io/rfcs/3058-try-trait-v2.html][=Try= trait version 2]] is monadic. It is on nightly Rust:
+
+#+BEGIN_SRC rust
+use std::ops::Try;
+
+fn monad_unit<T: Try>(x: <T as Try>::Ok) -> T {
+    T::from_output(x)
+}
+
+fn monad_bind<T1: Try<Residual = R>, T2: Try<Residual = R>, R>(mx: T1, f: impl FnOnce(<T1 as Try>::Ok) -> T2) -> T2 {
+    let x = mx?;
+    f(x)
+}
+
+fn main() {
+    let mx: Option<i32> = monad_unit(1);
+    let my = monad_bind(mx, |x| Some(x + 1));
+    let mz = monad_bind(my, |x| Some(-x));
+    assert_eq!(mz, Some(-2));
+}
+#+END_SRC
+
+As you see, it looks like Monad interestingly. As the RFC pointed out, having Monad in Rust does not make sense. But, I figured out =Try= trait can be just taken instead of Monad. It could better fit to imperative style because it is just a abstraction of control flow, it is not strict and does not need immutability. I will take some idea partially from monads.
+
+I like to apply =Try= trait on TF(Tagless Final) encoding. I think TF is a nice way to design software. But I do not talk about TF here.
+
+** Stacking Try
+
+A Monad Transformer is a fancy reusable monad to stack monads. Stacking many monads is zero-cost because Monad Transformers are newtypes. let's see =MaybeT=:
+
+#+BEGIN_SRC haskell
+newtype MaybeT m a = MaybeT { runMaybeT :: m (Maybe a) }
+#+END_SRC
+
+=MaybeT= is a Monad Transformer of =Maybe= and monad =m=. =Maybe= type is same type with =Option= in Rust. We can translate it to Rust, =m= is an arbitrary monad:
+
+#+BEGIN_SRC rust
+struct OptionT<A>(Monad<Option<A>>)
+#+END_SRC
+
+Apart from existence of monads in Rust, type definition itself looks good, it is meaningless though.
+
+Instead of a monad transformer, we can have a simple newtype for =Try= trait. Let's define a newtype implementing =Try= trait and extend functionality of the type. For example, Rust's =Option= has an implementation of =Try= trait. We want to extend functionality without polluting standard =Option=:
+
+#+BEGIN_SRC rust
+struct MyOption<A>(Option<A>)
+#+END_SRC
+
+And implement =Try= trait depending on inner type:
+
+#+BEGIN_SRC rust
+impl<T> ops::FromResidual for MyOption<T> {
+    fn from_residual(residual: <Option<T> as ops::Try>::Residual) -> Self {
+        Self(<Option<T> as ops::FromResidual>::from_residual(
+            residual,
+        ))
+    }
+}
+
+impl<T> ops::Try for MyOption<T> {
+    type Output = T;
+    type Residual = <Option<T> as ops::Try>::Residual;
+
+    #[inline]
+    fn from_output(output: Self::Output) -> Self {
+        CalcF(<Option<T> as ops::Try>::from_output(output))
+    }
+
+    #[inline]
+    fn branch(self) -> ops::ControlFlow<Self::Residual, Self::Output> {
+        self.0.branch()
+    }
+}
+#+END_SRC
+
+Now =MyOption= became triable with a lot of boilerplate. =?= and =try { }= sugars works on =MyOption= through the inner =Option= seamlessly. Any trait implementation can be added to =MyOption= without polluting the inner =Option=. The best advantage is that the wrapper has no runtime overhead.
+
+** Identity Try
+
+=Identity= Monad is a very useful Monad, specially in tests. Basically it is just a newtype containing a value, but it has Monad instance:
+
+#+BEGIN_SRC haskell
+newtype Identity a = Identity { runIdentity :: a }
+
+instance Monad Identity where
+    m >>= k  = k (runIdentity m)
+#+END_SRC
+
+we can rewrite it in Rust:
+
+#+BEGIN_SRC rust
+struct Identity<A>(A)
+#+END_SRC
+
+If our program is based on Monad, we want to test it simply. Instead of using a particular Monad, we can use =Identity= Monad. let's try it with =Try= trait.
+
+#+BEGIN_SRC rust
+impl<T> ops::FromResidual<<Self as ops::Try>::Residual> for Identity<T> {
+    fn from_residual(residual: <Self as ops::Try>::Residual) -> Self {
+        match residual {}
+    }
+}
+
+impl<T> ops::Try for Identity<T> {
+    type Output = T;
+    type Residual = convert::Infallible;
+
+    #[inline]
+    fn from_output(output: Self::Output) -> Self {
+        Identity(output)
+    }
+
+    #[inline]
+    fn branch(self) -> ops::ControlFlow<Self::Residual, Self::Output> {
+        ops::ControlFlow::Continue(self.0)
+    }
+}
+#+END_SRC
+
+=Try::Output= is =T=, so =Identity(1)?= is desugared as =1=. Interesting point would be =convert::Infallible=. It is called never type in Rust, which has no value.
+
+=Identity= newtype is not allocated at all, but =T= type can get sugared. If we build our program with =Try= trait, we can have many interpreters of the program as we want. An interpreter with =Identity= type is very useful in unit tests, it let us focus on testing our program.
+
+** Wrapping Try
+
+A newtype can implement =Try= trait working through its inner type. The newtype is sugared seamlessly.
+
+#+BEGIN_SRC rust
+struct New<T>(T);
+
+impl<T> ops::FromResidual for New<T>
+where
+    T: ops::FromResidual + ops::Try,
+{
+    #[inline]
+    #[track_caller]
+    fn from_residual(residual: <T as ops::Try>::Residual) -> Self {
+        Self(<T as ops::FromResidual>::from_residual(residual))
+    }
+}
+
+impl<T> ops::Try for New<T>
+where
+    T: ops::Try,
+{
+    type Output = <T as ops::Try>::Output;
+    type Residual = <T as ops::Try>::Residual;
+
+    #[inline]
+    fn from_output(output: Self::Output) -> Self {
+        Self(<T as ops::Try>::from_output(output))
+    }
+
+    #[inline]
+    fn branch(self) -> ops::ControlFlow<Self::Residual, Self::Output> {
+        self.0.branch()
+    }
+}
+
+fn new_sample() -> New<Result<u8, String>> {
+    New(Ok(New(Ok(1))? + New(Ok(2))? + New(Ok(3))?))
+}
+#+END_SRC
+
+** Limitation
+
+Monads and Monad transformers are reusable types. We do not need to define for every case. But in Rust we need to define triable newtype every time because Rust does not support Higher-Kinded type.
+
+And a lawful functional typeclass guarantees something like safe sequential composition of Monad, but this approach is not lawful.
+
+** Macros
+
+I am working on [[http://www.github.com/pismute/derive_try][a crate]] for macro derivations to kill boilerplates of =Try= trait. Instead of pasting the same code, We can derive it.
+
+#+BEGIN_SRC rust
+#[derive(IdTry)]
+struct Id<A>(A)
+
+#[derive(IdTry)]
+struct MyString(String)
+
+#[derive(Try)]
+struct MyOption<A>(Option<A>)
+
+#[derive(Try)]
+struct MyResult<A, E>(Result<A, E>)
+#+END_SRC
+
+=IdTry= generates =Try= boilerplates for identical newtype. This =Try= implementation is infallible.
+
+=Try= do for inner value, inner type must implement =Try= trait.
+
+You can see full examples:
+
+- [[https://github.com/pismute/derive_try/blob/master/examples/monadic_try.rs][Try]]
+- [[https://github.com/pismute/derive_try/blob/master/examples/monadic_try_macro.rs][Try with macros]]
+
+** Wrap-up
+
+Can you feel how useful =Try= trait is? I think it might not.
+
+I will show you a simple example of Tagless Final encoding in Rust. Monad-like structures are really necessary.
+
+** Reference
+
+- [[https://rust-lang.github.io/rfcs/3058-try-trait-v2.html][3058-try-trait-v2]]
+- [[https://serokell.io/blog/introduction-tagless-final][Introduction to Tagless Final]]
