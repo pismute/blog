@@ -203,7 +203,7 @@ You can see full examples:
 
 Can you feel how useful =Try= trait is? I think it might not.
 
-I will show you a simple example of Tagless Final encoding in Rust. Monad-like structures are really necessary.
+I wrote about an simple Tagless Final calculator with =Try= trait as an example. Please check [[./20210529_tagless-final.org][Tagless Final in Rust]]
 
 ** Reference
 

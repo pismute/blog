@@ -1,0 +1,189 @@
+* Tagless Final in Rust
+
+I think =Tagless Final= is one of the best way to design a software. In TF, eDSL is encoded to functions. A trait is a set of functions. An implementation of the trait is an interpreter. Is it sound simple, isn't it? Yes, TF is very simple and performant.
+
+TF in Rust cannot be fully implemented. Rust supports Polymorphism, newtype and so on. but, It does not have Higher-Kinded type and functional structures. I would like to check what I can do in Rust.
+
+** eDSL(Embedded Domain Specific Language)
+
+[[https://en.wikipedia.org/wiki/Domain-specific_language][Wikepedia]] says:
+
+#+begin_quote
+A domain-specific language (DSL) is a computer language specialized to a particular application domain. This is in contrast to a general-purpose language (GPL), which is broadly applicable across domains.
+
+...
+
+DSLs implemented via an independent interpreter or compiler are known as External Domain Specific Languages. Well known examples include LaTeX or AWK. A separate category known as Embedded (or Internal) Domain Specific Languages are typically implemented within a host language as a library and tend to be limited to the syntax of the host language, though this depends on host language capabilities.
+#+end_quote
+
+eDSLs are functions in TF. A program composes those functions in a certain way. We can evaluate the program with an interpreter, such as main interpreter for production and test interpreters.
+
+How can we compose the functions? Functional languages have many compositional structures. For example, Monad is required to compose the functions sequentially. If the program compose the functions sequentially, Monad can be used in the program and A particular monad is taken in an interpreter. The program does not mind how to compose sequentially, it is an interpreter specific problem.
+
+Rust is imperative, it does not have such lawful abstractions. But, I figured out =Try= trait can be used as a compositional abstraction. It is a just abstraction of control flows, a user is in charge of safe composition.
+
+** A simple calculator
+
+Let's have a simple =eDSL=. I would like to have a very very simple calculator which supports only addition.
+
+#+BEGIN_SRC rust
+trait LiftTry<Input>: Sized {
+    type Output;
+    type F: ops::Try<Output = Self::Output>;
+
+    fn lift(value: Input) -> Self::F;
+}
+
+trait Calculator<A>: LiftTry<A> {
+    fn plus(lhs: Self::F, rhs: Self::F) -> Self::F;
+}
+#+END_SRC
+
+=LiftTry= is a hack for the lack of Higher-Kinded type. I think If it is possible to have a reusable type instead of =LiftTry=, it would be the best way. As of now, I do not have any idea. So I want to define such a type for every program. I think it is not a big deal, it is not a main advantage of TF. The =plus= function can be composed in the context =LiftTry::F=.
+
+Then, we can write a program:
+
+#+BEGIN_SRC rust
+fn program<A, T>(a: A, b: A, c: A) -> T::F
+where
+    T: Calculator<A>,
+    T::F: ops::Add<Output = T::F>,
+{
+    T::lift(a) + T::lift(b) + T::lift(c)
+}
+#+END_SRC
+
+This program has two constraints, =Calculator= and =ops::Add= to use =+= operator.
+
+** String interpreter
+
+Before starting this section. please read [[./20210515_monadic-try.org][Monadic Try]] I wrote. You can find =IdTry= and =Try= macros in there.
+
+What the program does can be printed out rather than doing real calculation. In this case, we need something like a [[https://hackage.haskell.org/package/base-4.16.1.0/docs/Data-Functor-Identity.html][Identity]] monad for =Try= trait. because String interpreter never fails and does not have any state. For String interpreter, I defined =StringCalcF= which contains a =String=. It implements three traits of =Display=, =ops::Add= and =Try=:
+
+#+BEGIN_SRC rust
+#[derive(Debug, derive_try::IdTry, derive_more::Display)]
+struct StringCalcF(String);
+
+impl ops::Add for StringCalcF {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        <StringCalc as Calculator<String>>::plus(self, rhs)
+    }
+}
+#+END_SRC
+
+You can find =IdTry= macro in [[https://github.com/pismute/derive_try][derive_try]], =Display= macro in [[https://github.com/JelteF/derive_more][derive_more]].
+
+With =StringCalcF=, we can write a String interpreter. The implementation of =Calculator= will be dispatched through =StringCalc=.
+
+#+BEGIN_SRC rust
+struct StringCalc;
+
+impl<A: fmt::Display> LiftTry<A> for StringCalc {
+    type Output = String;
+    type F = StringCalcF;
+
+    fn lift(value: A) -> Self::F {
+        StringCalcF(format!("{}", value))
+    }
+}
+
+impl<A: fmt::Display> Calculator<A> for StringCalc {
+    fn plus(lhs: Self::F, rhs: Self::F) -> Self::F {
+        StringCalcF(format!("{} + {}", lhs.0, rhs.0))
+    }
+}
+#+END_SRC
+
+Now we evaluate the program with this =StringCalc= interpreter:
+
+#+BEGIN_SRC rust
+println!("string: {:?}", program::<_, StringCalc>(3, 2, 1));
+// string: StringCalcF("3 + 2 + 1")
+#+END_SRC
+
+Yeah, the program is just printed out.
+
+** Generic Interpreter
+
+We checked a simple printing calculator. Now, it is time to build a real calculator. Like =StringCalc=, it also needs a newtype:
+
+#+BEGIN_SRC rust
+#[derive(Debug, Try)]
+struct CalcF<T>(Result<T, CalcError>);
+
+#[derive(Debug)]
+enum CalcError {
+    Overflow,
+}
+
+impl<A> ops::Add for CalcF<A>
+where
+    A: num::CheckedAdd<Output = A>,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        <Calc as Calculator<A>>::plus(self, rhs)
+    }
+}
+#+END_SRC
+
+Real calculator should care of Overflow error. =CalcF= has =Result= type which implements =Try= trait. =CalcF= type also implements =Try= trait, but it works on =Result= type seamlessly.
+
+The implementation of =ops::Add= for =CalcF= has =num::CheckedAdd= constraint to check overflow error. =CheckedAdd= trait comes from [[https://crates.io/crates/num][num]] crate.
+
+A big advantage of this way is that the program and =eDSL= does not know interpreter specific errors. If we have a domain problem, it should be handled in domain level. If there are domain errors, =Calculator= should include =Result= types for domain errors. But, in this example, we separated interpreter specific things, kept the domain area hygienic.
+
+Finally, we make a real calculator:
+
+#+BEGIN_SRC rust
+impl<A> LiftTry<A> for Calc {
+    type Output = A;
+    type F = CalcF<Self::Output>;
+
+    fn lift(value: A) -> Self::F {
+        CalcF(Ok(value))
+    }
+}
+
+impl<A> Calculator<A> for Calc
+where
+    A: num::CheckedAdd<Output = A>,
+{
+    fn plus(lhs: Self::F, rhs: Self::F) -> Self::F {
+        let l = lhs?;
+        let r = rhs?;
+        CalcF(l.checked_add(&r).ok_or(CalcError::Overflow))
+    }
+}
+#+END_SRC
+
+It does real calculation, =?= sugar is used because =CalcF= implements =Try= trait. With =Calc= interpreter, the program can be run:
+
+#+BEGIN_SRC rust
+println!("generic: {:?}", program::<_, Calc>(3, 2, 1));
+// CalcF(Ok(6))
+
+println!("overflow: {:?}", program::<u8, Calc>(254, 254, 1));
+// CalcF(Err(Overflow))
+#+END_SRC
+
+Interpreters evalute the program, it is not touched at all for each. I would like to build a larger example later.
+
+You can find full source code [[https://github.com/pismute/derive_try/blob/master/examples/tagless_final_calculator_macro.rs][here]].
+
+** Wrap-up
+
+In my experience of Scala, TF is a really good way to build software. But I would not say yet that it is the same in Rust. This calculator is too simple to say that.
+
+If you are interested in Tagless Final encoding further. Please visit the references at the end.
+
+** Reference
+
+- [[https://okmij.org/ftp/tagless-final/index.html][Tagless-final style - by Oleg Kiselyov and his colleagues]]
+- [[https://serokell.io/blog/introduction-tagless-final][Introduction to Tagless Final]]
+- [[https://peddie.github.io/encodings/encodings-text.html][Initial and Final Encodings]]
+- [[https://varkor.github.io/blog/2019/03/28/idiomatic-monads-in-rust.html][Idiomatic monads in Rust]]
