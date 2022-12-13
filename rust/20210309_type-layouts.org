@@ -198,9 +198,9 @@ So, there are a few of built-in unsized types, as far as I know:
 
 ** Slices
 
-We can get the size of unsized type with =mem::size_of_value()=, but it didn't work as I expected on slices. I thought that =size_of_value= might return the size of pointed actual value at first because =size_of_val(&"123456")= is 6, the size of =&str= is 16 though. so I expected that =size_of_val(&String("123456"))= might return 6. Actually it returns 24 of the size of String, =size_of::<String>=. It was confusing to me.
+We can get the size of unsized type with =mem::size_of_val()=, but it didn't work as I guessed on slices. I thought that =mem::size_of_val()= might return the size of pointed actual value at first because =size_of_val(&"123456")= is 6, the size of =mem::size_of(&str)= is 16 though. so I expected that =size_of_val(&String("123456"))= might return 6. Actually it returns 24 of the size of String, the same size with =size_of::<String>=. It was confusing to me.
 
-I don't understand how =size_of_val= deals with unsized types internally. I think a slice are a fat pointer, =size_of_value= gets the size of pointed value by a fat pointer. like that, the function returns the size of pointed value by a normal pointer. It is my understanding:
+I don't understand how =size_of_val= deals with unsized types internally. In my understanding, because a slice are a fat pointer, the size of the pointed value by a fat pointer is 6. However, =&String= is not a fat pointer. The pointed value of =&String= is not an actual string, but it is a =struct= of String which has 24 bytes of the size of String(buffer, capacity, length). An actual string is pointed by an instance of String, not by a pointer of =&String=.
 
 #+BEGIN_SRC rust
 assert_eq!(16, mem::size_of::<&str>());
@@ -212,7 +212,7 @@ let _string: &String = &"123456".to_string();
 
 assert_eq!(6, mem::size_of_val(_str));
 
-assert_eq!(24, mem::size_of_val(_string));
+assert_eq!(24, mem::size_of_val(_string)); 
 #+END_SRC
 
 ** Wrap-up
@@ -227,3 +227,4 @@ Memory layouts are very fundamental and confusing to me, I have taken it at firs
 - [[https://rust-hosted-langs.github.io/book/chapter-alignment.html][Writing Interpreters in Rust: a Guide - Alignment]]
 - [[https://web.mit.edu/rust-lang_v1.25/arch/amd64_ubuntu1404/share/doc/rust/html/book/first-edition/unsized-types.html][Unsized Types - The Rust Programming Language, 1st edition]]
 - [[https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/][Programming Rust]]
+- [[https://blog.thoughtram.io/string-vs-str-in-rust/][String vs &str in Rust]]
